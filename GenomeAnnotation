@@ -1,0 +1,264 @@
+## FIU Genomics & Bioinformatics Analysis CURE BSC3990L Genomics ###
+
+***Genome Annotation tutorial***
+
+<b>Note:</b>This tutorial uses <i>E.coli</i> but demonstrates eukaryotic <i>de novo</i> genome annotation without RNA data. 
+
+1. Bacterial genome annotation has its own specialized softwares which are likely to perform better. If you are doing prokaryotic genome annotation, try looking into [Prokka](https://github.com/tseemann/prokka).
+
+2. This is de novo annotation, which is more difficult than if you had a reference genome. For gene annotation when a reference is present, try looking into [Liftoff](https://github.com/agshumate/Liftoff).
+
+3. The more data the better. For this course we did not do RNA sequencing, however, it is recommended to provide more evidence for annotation softwares. 
+If you have RNA data, the process is very similar. The only difference is that after repeat masking, you have to align your RNA data to your genome. 
+A few popular tools exist for this; try looking into [STAR](https://github.com/alexdobin/STAR?tab=readme-ov-file) or [HISAT2](https://daehwankimlab.github.io/hisat2/manual/). 
+[Here](https://github.com/ToriEggers/DeNovo-Nematode-Pipeline/blob/main/DeNovo-Nematode-Pipeline.md), under protein annotation, is information on running STAR or HISAT2 on the FIU HPC. 
+
+<details>
+
+<summary><b>Masking Repeats</b></summary>
+
+**RepeatMasker/Modeler**
+
+https://github.com/Dfam-consortium/RepeatModeler
+
+If the assembly is good to go, we can begin preliminary repeat annotation. This first step uses repeatModeler/Masker to mask repeat regions of the genome and make gene annotation easier. This is just a first pass, which creates a library of repeats found in the genome. 
+
+Install repeatModeler/Masker with conda:
+
+```
+module load mamba/23.1.0-4
+conda create -n repeatmodeler
+source activate repeatmodeler
+mamba install -c bioconda repeatmodeler
+```
+
+
+```
+#!/bin/bash
+
+#SBATCH --account account_name
+#SBATCH --qos node_name
+#SBATCH --partition node_name
+#SBATCH --output=out_%repeatmodeler.log
+#SBATCH --mail-user=username@email.com   #use your own email
+#SBATCH --mail-type=ALL
+
+module load mamba/23.1.0-4
+source activate repeatmodeler
+
+#Build the database
+BuildDatabase -name [species_name] [genome.fasta]
+
+#Run RepeatModeler for de novo repeat identification and characterization
+RepeatModeler -threads 8 -database [species_name]
+
+#Use the queryRepeatDatabase.pl script inside RepeatMasker/util to extract Rhabditida repeats
+queryRepeatDatabase.pl -species rhabditida | grep -v "Species:" > Rhabditida.repeatmasker
+
+#Combine the files to create a library of de novo and known repeats
+cat RM*/consensi.fa.classified Rhabditida.repeatmasker > [species_name].repeats
+
+```
+
+-pa might give an error and you may have to change the script to -threads instead
+
+Mask the repeats from the library you just generated. 
+```
+#Module load RepeatMasker
+module load RepeatMasker-4.1.0
+
+#Mask the genome of known repeats
+RepeatMasker -lib [species_name].repeats -pa 8 -xsmall -nolow [keptcontigs.fasta] 
+```
+-nolow / -l(ow)
+
+With the option -nolow or -l(ow) only interspersed repeats are masked. By default simple tandem repeats and low complexity (polypurine, AT-rich) regions are masked besides the interspersed repeats. For database searches the default setting is recommended, but sometimes, e.g. when using the masked sequence to predict the presence of exons, it may be better to skip the low complexity masking.
+
+
+-xsmall 
+
+Returns repetitive regions in lowercase (soft masking) instead of replacing with N's (hard masking). Non-repeat regions remain in uppercase.
+
+
+-pa
+
+Stands for parallel, for multiprocessing, runs 8 sequences at a time. 
+
+
+The output of RepeatMasker is *.masked
+
+Also, remember that the output of RepeatModeler (custom library) is in RM*/consensi.fa.classified
+Or, if you want a broader library, [species].repeats
+
+</details>
+<br>
+
+
+
+<details>
+
+
+<details>
+<summary><b>Protein Prediction</b></summary>
+
+**BRAKER3**
+
+https://github.com/Gaius-Augustus/BRAKER
+
+BRAKER3 uses genome, RNA, and protein data to predict proteins. It is highly sensitive to the data you give it. 
+
+This is using BRAKER singularity container published 2/28/2024. 
+
+Install the singularity container:
+
+```
+module load singularity-3.8.7
+singularity build braker3.sif docker://teambraker/braker3:latest
+singularity exec braker3.sif braker.pl
+```
+
+If installed you should get the braker help menu. You can also test your installation with their test data:
+
+```
+singularity exec -B $PWD:$PWD braker3.sif cp /opt/BRAKER/example/singularity-tests/test1.sh .
+singularity exec -B $PWD:$PWD braker3.sif cp /opt/BRAKER/example/singularity-tests/test2.sh .
+singularity exec -B $PWD:$PWD braker3.sif cp /opt/BRAKER/example/singularity-tests/test3.sh .
+export BRAKER_SIF=/your/path/to/braker3.sif # may need to modify
+bash test1.sh
+bash test2.sh
+bash test3.sh
+```
+
+```
+#!/bin/bash
+
+#SBATCH --account account_name
+#SBATCH --qos qos_name
+#SBATCH --partition partition_name
+#SBATCH --output=out_braker3.log
+#SBATCH --mail-user=your@email.com
+#SBATCH --mail-type=ALL
+
+module load singularity-3.8.7
+export BRAKER_SIF=/home/data/jfierst/veggers/braker3.sif
+
+singularity exec braker3.sif braker.pl \
+ --workingdir=species_braker3 \
+ --species=species_name \
+ --useexisting \
+ --genome=./masked.fasta \
+ --prot_seq=./Metazoa.fa \
+ --bam=./species_STAR/Aligned.out.bam \   #if you used hisat2: ./species_hisat2/species.bam
+ --softmasking
+
+```
+
+This takes approximately 30 hours on a nematode genome of ~100Mb
+
+
+**AGAT**
+
+https://github.com/NBISweden/AGAT
+
+AGAT is used to covert the .gtf output file from BRAKER, to a .gff3 file format. It also calculates some basic statistics such as gene count.
+
+Install with conda
+
+```
+#!/bin/bash
+
+#SBATCH --account iacc_jfierst
+#SBATCH --qos highmem1
+#SBATCH --partition highmem1
+#SBATCH --output=out_%braker3_agat.log
+#SBATCH --mail-user=your@email.com
+#SBATCH --mail-type=ALL
+
+#combined fasta and protein
+agat_convert_sp_gxf2gxf.pl -g /path/to/[sample]_braker.gtf -o [sample]_braker3.gff3
+agat_sp_statistics.pl --gff /path/to/[sample]_braker3.gff3 \
+        -f /path/to/keptcontigs.masked \
+        -o [sample]_AGATstats
+
+```
+
+</details>
+
+
+
+<details>
+<summary><i>Functional Annotation</i></summary>
+**InterProScan**
+
+https://interproscan-docs.readthedocs.io/en/latest/
+
+InterProScan scans the InterPro database to predict protein function and domains.
+
+```
+#!/bin/bash
+
+#SBATCH --account iacc_jfierst
+#SBATCH --qos highmem1
+#SBATCH --partition highmem1
+#SBATCH -n 8
+#SBATCH --output=out_InterProScan.log
+#SBATCH --mail-user=your@email.com
+#SBATCH --mail-type=ALL
+
+
+module load jdk1.8.0_241
+module load interproscan-5.55
+module load perl-5.34.0-gcc-8.2.0-b5u622f
+
+/home/applications/interproscan/interproscan-5.33-72.0/interproscan.sh -i /path/to/protein.fa -f tsv -dp -goterms -pa
+```
+
+</details>
+
+
+
+ 
+</details>
+<br>
+
+
+
+<details>
+
+<summary><b>Repeat Annotation</b></summary>
+
+**EDTA**
+
+https://github.com/oushujun/EDTA
+
+A de novo repeat annotation program that creates a high-quality non-redundant TE consensus library. While it can run given only a genome fasta file, we also provide the input files:
+
+1) CDS, created from BRAKER output
+2) BED of known gene positions, created from BRAKER output
+3) Curated TE library, created from RepeatModeler output
+
+I did a manual installation of EDTA, however it is conda-able. As of 11/29/2023 it was not available as a module on the hpc.
+
+```
+#!/bin/bash
+
+#SBATCH --account iacc_jfierst
+#SBATCH --qos highmem1
+#SBATCH --partition highmem1
+#SBATCH --output=out_edta.log
+#SBATCH --mail-user=your@email.com
+#SBATCH --mail-type=ALL
+
+perl /path/to/EDTA.pl --genome /path/to/keptcontigs.fasta --cds /path/to/protein.fasta --curatedlib /path/to/[species_name].repeats --exclude /path/to/genes.bed --overwrite 1 --sensitive 1 --anno 1 --evaluate 1 --threads 10
+```
+
+
+There are many output files generated by EDTA. 
+
+*.mod.EDTA.TElib.fa is the curated consensus library
+
+*.mod.EDTA.TEanno.gff3 contains all TE annotations, including redundant and fragmented sequences
+
+*.mod.EDTA.TEanno.sum is the summary file for whole genome TE annotation
+
+</details>
